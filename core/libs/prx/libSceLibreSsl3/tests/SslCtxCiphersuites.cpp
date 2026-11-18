@@ -7,9 +7,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <source_location>
 #include <stdexcept>
 #include <utility>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -202,6 +211,61 @@ void UnreadableList() {
     Require(liveAllocations == 0);
 }
 
+void InvalidContextPointers() {
+    errno = 71;
+    bool thrown = false;
+    try {
+        SSL_CTX_set_ciphersuites_nid_postfix(reinterpret_cast<LibreSsl3SslCtx*>(std::uintptr_t{0x10}), "TLS_AES_128_GCM_SHA256");
+    } catch (const std::invalid_argument&) {
+        thrown = errno == 71;
+    }
+    Require(thrown);
+    Require(liveAllocations == 0);
+
+    LibreSsl3SslCtx seed{};
+    Require(SSL_CTX_set_ciphersuites_nid_postfix(&seed, "TLS_AES_128_GCM_SHA256") == 1);
+    void* const existingStack = seed.cipherListTls13;
+    const std::size_t before = liveAllocations;
+#ifdef _WIN32
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const std::size_t pageSize = info.dwPageSize;
+    void* page = VirtualAlloc(nullptr, pageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    Require(page != nullptr);
+    Require(sizeof(seed) <= pageSize);
+    std::memcpy(page, &seed, sizeof(seed));
+    DWORD previousProtect = 0;
+    Require(VirtualProtect(page, pageSize, PAGE_READONLY, &previousProtect) != 0);
+#else
+    const long systemPageSize = sysconf(_SC_PAGESIZE);
+    Require(systemPageSize > 0);
+    const std::size_t pageSize = static_cast<std::size_t>(systemPageSize);
+    void* page = mmap(nullptr, pageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(page != nullptr && page != MAP_FAILED);
+    Require(sizeof(seed) <= pageSize);
+    std::memcpy(page, &seed, sizeof(seed));
+    Require(mprotect(page, pageSize, PROT_READ) == 0);
+#endif
+    auto* const readOnlyContext = static_cast<LibreSsl3SslCtx*>(page);
+    errno = 71;
+    thrown = false;
+    try {
+        SSL_CTX_set_ciphersuites_nid_postfix(readOnlyContext, "TLS_AES_256_GCM_SHA384");
+    } catch (const std::invalid_argument&) {
+        thrown = errno == 71;
+    }
+    Require(thrown);
+    Require(readOnlyContext->cipherListTls13 == existingStack);
+    Require(liveAllocations == before);
+#ifdef _WIN32
+    Require(VirtualFree(page, 0, MEM_RELEASE) != 0);
+#else
+    Require(munmap(page, pageSize) == 0);
+#endif
+    sk_free_nid_postfix(Stored(seed));
+    Require(liveAllocations == 0);
+}
+
 }
 
 int main() {
@@ -219,6 +283,7 @@ int main() {
     NullArguments();
     ReallocationFailure();
     UnreadableList();
+    InvalidContextPointers();
     Require(liveAllocations == 0);
     std::puts("libSceLibreSsl3 SSL_CTX_set_ciphersuites tests passed");
 }

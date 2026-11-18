@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,6 +50,16 @@ std::string ReadGuestText(const char* text, const char* caller) {
 extern "C" int APS5_VABI SSL_CTX_set_ciphersuites_nid_postfix(LibreSsl3SslCtx* context, const char* ciphersuites) {
     if (!context || !ciphersuites) return 0;
     const std::string guestText = ReadGuestText(ciphersuites, __func__);
+    const auto baseAddress = reinterpret_cast<std::uintptr_t>(context);
+    const auto fieldAddress = baseAddress + offsetof(LibreSsl3SslCtx, cipherListTls13);
+    auto* const field = reinterpret_cast<void**>(fieldAddress);
+    void* previous = nullptr;
+    const int savedErrno = errno;
+    const bool accessible = fieldAddress >= baseAddress &&
+                            GuestCopyIn_nid_no_patch(&previous, field, sizeof(previous)) &&
+                            GuestWritable_nid_no_patch(field, sizeof(previous));
+    errno = savedErrno;
+    if (!accessible) throw std::invalid_argument("SSL_CTX_set_ciphersuites: invalid context");
     auto* const stack = sk_new_nid_postfix(nullptr);
     if (!stack) return 0;
     if (!guestText.empty()) {
@@ -64,7 +75,14 @@ extern "C" int APS5_VABI SSL_CTX_set_ciphersuites_nid_postfix(LibreSsl3SslCtx* c
             remaining.remove_prefix(separator + 1);
         }
     }
-    sk_free_nid_postfix(static_cast<LibreSslStack*>(context->cipherListTls13));
-    context->cipherListTls13 = stack;
+    void* replacement = stack;
+    const int savedWriteErrno = errno;
+    const bool written = GuestCopyOut_nid_no_patch(field, &replacement, sizeof(replacement));
+    errno = savedWriteErrno;
+    if (!written) {
+        sk_free_nid_postfix(stack);
+        throw std::invalid_argument("SSL_CTX_set_ciphersuites: unwritable context");
+    }
+    sk_free_nid_postfix(static_cast<LibreSslStack*>(previous));
     return 1;
 }

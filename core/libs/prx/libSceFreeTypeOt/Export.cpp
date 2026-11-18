@@ -313,11 +313,21 @@ void APS5_VABI FT_Vector_Transform_Scaled_nid_postfix(FreeType::GuestVector* vec
     if (!vector || !matrix) {
         return;
     }
+    FreeType::GuestVector source{};
+    FreeType::GuestMatrix transform{};
+    const int savedErrno = errno;
+    const bool readable = GuestCopyIn_nid_no_patch(&source, vector, sizeof(source)) &&
+                          GuestCopyIn_nid_no_patch(&transform, matrix, sizeof(transform));
+    errno = savedErrno;
+    if (!readable) APS5_INVALID_ARG_EX;
     const FreeType::GuestVector transformed{
-        ScaledSum(vector->x, matrix->xx, vector->y, matrix->xy, divisor, __func__),
-        ScaledSum(vector->x, matrix->yx, vector->y, matrix->yy, divisor, __func__),
+        ScaledSum(source.x, transform.xx, source.y, transform.xy, divisor, __func__),
+        ScaledSum(source.x, transform.yx, source.y, transform.yy, divisor, __func__),
     };
-    *vector = transformed;
+    const int savedWriteErrno = errno;
+    const bool written = GuestCopyOut_nid_no_patch(vector, &transformed, sizeof(transformed));
+    errno = savedWriteErrno;
+    if (!written) APS5_INVALID_ARG_EX;
 }
 
 std::int32_t APS5_VABI FT_SqrtFixed_nid_postfix(std::int32_t x) {
@@ -336,27 +346,67 @@ void APS5_VABI ft_synthesize_vertical_metrics_nid_postfix(FreeType::GuestGlyphMe
     if (!metrics) {
         return;
     }
-    std::int64_t height = metrics->height;
-    if (metrics->horiBearingY < 0) {
-        if (height < metrics->horiBearingY) {
-            height = metrics->horiBearingY;
+    FreeType::GuestGlyphMetrics local{};
+    const int savedErrno = errno;
+    const bool readable = GuestCopyIn_nid_no_patch(&local, metrics, sizeof(local));
+    errno = savedErrno;
+    if (!readable) APS5_INVALID_ARG_EX;
+    std::int64_t height = local.height;
+    if (local.horiBearingY < 0) {
+        if (height < local.horiBearingY) {
+            height = local.horiBearingY;
         }
-    } else if (metrics->horiBearingY > 0) {
-        height -= metrics->horiBearingY;
+    } else if (local.horiBearingY > 0) {
+        height -= local.horiBearingY;
     }
     if (!advance) {
         advance = height * 12 / 10;
     }
-    metrics->vertBearingX = metrics->horiBearingX - metrics->horiAdvance / 2;
-    metrics->vertBearingY = (advance - height) / 2;
-    metrics->vertAdvance = advance;
+    local.vertBearingX = local.horiBearingX - local.horiAdvance / 2;
+    local.vertBearingY = (advance - height) / 2;
+    local.vertAdvance = advance;
+    const int savedWriteErrno = errno;
+    const bool written = GuestCopyOut_nid_no_patch(metrics, &local, sizeof(local));
+    errno = savedWriteErrno;
+    if (!written) APS5_INVALID_ARG_EX;
 }
 
 void* APS5_VABI ft_service_list_lookup_nid_postfix(const GuestServiceDesc* descriptors, const char* service_id) {
     if (descriptors && service_id) {
-        for (; descriptors->serv_id; ++descriptors) {
-            if (std::strcmp(descriptors->serv_id, service_id) == 0) {
-                return descriptors->serv_data;
+        const auto readChar = [](const char* base, std::size_t offset) {
+            const auto address = reinterpret_cast<std::uintptr_t>(base);
+            if (offset > std::numeric_limits<std::uintptr_t>::max() - address) APS5_INVALID_ARG_EX;
+            const int savedErrno = errno;
+            char ch = '\0';
+            const bool copied = GuestCopyIn_nid_no_patch(&ch, reinterpret_cast<const void*>(address + offset), sizeof(ch));
+            errno = savedErrno;
+            if (!copied) APS5_INVALID_ARG_EX;
+            return ch;
+        };
+        const auto matches = [&](const char* candidate) {
+            for (std::size_t index = 0;; ++index) {
+                const char left = readChar(candidate, index);
+                const char right = readChar(service_id, index);
+                if (left != right) return false;
+                if (left == '\0') return true;
+            }
+        };
+        readChar(service_id, 0);
+        const auto descriptorsBase = reinterpret_cast<std::uintptr_t>(descriptors);
+        for (std::size_t index = 0;; ++index) {
+            GuestServiceDesc entry{};
+            const std::size_t offset = index * sizeof(entry);
+            const int savedErrno = errno;
+            const bool copied = offset / sizeof(entry) == index &&
+                                descriptorsBase <= std::numeric_limits<std::uintptr_t>::max() - offset &&
+                                GuestCopyIn_nid_no_patch(&entry, reinterpret_cast<const void*>(descriptorsBase + offset), sizeof(entry));
+            errno = savedErrno;
+            if (!copied) APS5_INVALID_ARG_EX;
+            if (!entry.serv_id) {
+                break;
+            }
+            if (matches(entry.serv_id)) {
+                return entry.serv_data;
             }
         }
     }

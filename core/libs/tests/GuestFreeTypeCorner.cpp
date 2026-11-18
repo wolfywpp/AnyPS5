@@ -4,7 +4,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -222,6 +229,93 @@ void CheckServiceListLookup() {
     Require(ft_service_list_lookup_nid_postfix(nullptr, nullptr) == nullptr, "ft_service_list_lookup returns null for null inputs");
 }
 
+void CheckGuestPointerValidation() {
+    const FreeType::GuestMatrix identity{0x10000, 0, 0, 0x10000};
+    FreeType::GuestVector target{3 << 16, -(7 << 16)};
+    const FreeType::GuestVector originalVector = target;
+    auto* badVector = reinterpret_cast<FreeType::GuestVector*>(std::uintptr_t{0x10});
+    const auto* badMatrix = reinterpret_cast<const FreeType::GuestMatrix*>(std::uintptr_t{0x10});
+
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { FT_Vector_Transform_Scaled_nid_postfix(badVector, &identity, 1); }) && errno == 71,
+        "FT_Vector_Transform_Scaled rejects an inaccessible vector without changing errno");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { FT_Vector_Transform_Scaled_nid_postfix(&target, badMatrix, 1); }) &&
+            errno == 71 && SameVector(target, originalVector),
+        "FT_Vector_Transform_Scaled rejects an inaccessible matrix without changing the vector or errno");
+
+    auto* badMetrics = reinterpret_cast<FreeType::GuestGlyphMetrics*>(std::uintptr_t{0x10});
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_synthesize_vertical_metrics_nid_postfix(badMetrics, 0); }) && errno == 71,
+        "ft_synthesize_vertical_metrics rejects an inaccessible record without changing errno");
+
+    int data = 42;
+    const GuestServiceDesc validDescriptors[]{{"a", &data}, {nullptr, nullptr}};
+    const GuestServiceDesc badEntryDescriptors[]{{reinterpret_cast<const char*>(std::uintptr_t{0x10}), &data}, {nullptr, nullptr}};
+    const GuestServiceDesc emptyDescriptors[]{{nullptr, nullptr}};
+    const auto* badDescriptors = reinterpret_cast<const GuestServiceDesc*>(std::uintptr_t{0x10});
+    const auto* badServiceId = reinterpret_cast<const char*>(std::uintptr_t{0x10});
+
+    Require(ft_service_list_lookup_nid_postfix(nullptr, badServiceId) == nullptr,
+        "ft_service_list_lookup keeps null array no-op even with bad service id");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_service_list_lookup_nid_postfix(badDescriptors, "a"); }) && errno == 71,
+        "ft_service_list_lookup rejects an inaccessible descriptor array without changing errno");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_service_list_lookup_nid_postfix(validDescriptors, badServiceId); }) && errno == 71,
+        "ft_service_list_lookup rejects an inaccessible service id without changing errno");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_service_list_lookup_nid_postfix(emptyDescriptors, badServiceId); }) && errno == 71,
+        "ft_service_list_lookup rejects an inaccessible service id against an empty list without changing errno");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_service_list_lookup_nid_postfix(badEntryDescriptors, "a"); }) && errno == 71,
+        "ft_service_list_lookup rejects an inaccessible descriptor serv_id without changing errno");
+
+#ifdef _WIN32
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const std::size_t pageSize = info.dwPageSize;
+    void* vectorPage = VirtualAlloc(nullptr, pageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    void* metricsPage = VirtualAlloc(nullptr, pageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    Require(vectorPage != nullptr && metricsPage != nullptr, "allocate read-only pages");
+#else
+    const long systemPageSize = sysconf(_SC_PAGESIZE);
+    Require(systemPageSize > 0, "query page size");
+    const std::size_t pageSize = static_cast<std::size_t>(systemPageSize);
+    void* vectorPage = mmap(nullptr, pageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* metricsPage = mmap(nullptr, pageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(vectorPage != MAP_FAILED && metricsPage != MAP_FAILED, "map read-only pages");
+#endif
+    Require(sizeof(FreeType::GuestVector) <= pageSize && sizeof(FreeType::GuestGlyphMetrics) <= pageSize, "structs fit in one page");
+    const FreeType::GuestVector vectorSeed{100, -200};
+    const FreeType::GuestGlyphMetrics metricsSeed{100, 200, 10, 50, 80, 0, 0, 0};
+    std::memcpy(vectorPage, &vectorSeed, sizeof(vectorSeed));
+    std::memcpy(metricsPage, &metricsSeed, sizeof(metricsSeed));
+#ifdef _WIN32
+    DWORD previous = 0;
+    Require(VirtualProtect(vectorPage, pageSize, PAGE_READONLY, &previous) != 0 &&
+            VirtualProtect(metricsPage, pageSize, PAGE_READONLY, &previous) != 0, "protect read-only pages");
+#else
+    Require(mprotect(vectorPage, pageSize, PROT_READ) == 0 &&
+            mprotect(metricsPage, pageSize, PROT_READ) == 0, "protect read-only pages");
+#endif
+    auto* const roVector = static_cast<FreeType::GuestVector*>(vectorPage);
+    auto* const roMetrics = static_cast<FreeType::GuestGlyphMetrics*>(metricsPage);
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { FT_Vector_Transform_Scaled_nid_postfix(roVector, &identity, 1); }) &&
+            errno == 71 && SameVector(*roVector, vectorSeed),
+        "FT_Vector_Transform_Scaled rejects a read-only vector without changing the vector or errno");
+    errno = 71;
+    Require(ThrowsInvalidArgument([&] { ft_synthesize_vertical_metrics_nid_postfix(roMetrics, 0); }) &&
+            errno == 71 && roMetrics->vertAdvance == 0,
+        "ft_synthesize_vertical_metrics rejects a read-only record without changing the metrics or errno");
+#ifdef _WIN32
+    Require(VirtualFree(vectorPage, 0, MEM_RELEASE) != 0 && VirtualFree(metricsPage, 0, MEM_RELEASE) != 0, "free read-only pages");
+#else
+    Require(munmap(vectorPage, pageSize) == 0 && munmap(metricsPage, pageSize) == 0, "unmap read-only pages");
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -257,6 +351,7 @@ int main() {
     CheckHighPow2();
     CheckSynthesizeVerticalMetrics();
     CheckServiceListLookup();
+    CheckGuestPointerValidation();
 
     std::puts("Guest FreeType corner tests passed");
     return 0;

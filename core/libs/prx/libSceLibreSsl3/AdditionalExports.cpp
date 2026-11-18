@@ -1,4 +1,7 @@
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include "prx/libSceLibreSsl3/include/Api.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -165,8 +168,19 @@ int APS5_VABI SSL_is_quic_nid_postfix() {
 
 int APS5_VABI EVP_MD_block_size_nid_postfix(const void* md) {
     if (!md) return -1;
-    if (md == EVP_sha1_nid_postfix() || md == EVP_sha224_nid_postfix()) return static_cast<const LibreSsl3::DigestMethod*>(md)->blockSize;
-    return static_cast<const EvpMd*>(md)->blockSize;
+    if (const void* sha1 = EVP_sha1_nid_postfix(); md == sha1)
+        return static_cast<const LibreSsl3::DigestMethod*>(sha1)->blockSize;
+    if (const void* sha224 = EVP_sha224_nid_postfix(); md == sha224)
+        return static_cast<const LibreSsl3::DigestMethod*>(sha224)->blockSize;
+    const int savedErrno = errno;
+    std::int32_t blockSize = 0;
+    const auto baseAddress = reinterpret_cast<std::uintptr_t>(md);
+    const auto fieldAddress = baseAddress + offsetof(EvpMd, blockSize);
+    const bool copied = fieldAddress >= baseAddress &&
+                        GuestCopyIn_nid_no_patch(&blockSize, reinterpret_cast<const void*>(fieldAddress), sizeof(blockSize));
+    errno = savedErrno;
+    if (!copied) throw std::invalid_argument("EVP_MD_block_size: unreadable digest");
+    return blockSize;
 }
 
 }

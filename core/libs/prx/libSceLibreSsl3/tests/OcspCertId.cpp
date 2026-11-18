@@ -2,9 +2,12 @@
 #include "prx/libc/libc.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include <array>
+#include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <source_location>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -133,5 +136,33 @@ int main() {
     for (unsigned mask = 0; mask < 16; ++mask)
         for (int parameter = 0; parameter < 4; ++parameter)
             for (bool dynamic : {false, true}) Check(mask, parameter, dynamic);
+
+    errno = 71;
+    bool rejected = false;
+    try {
+        OCSP_CERTID_free_nid_postfix(reinterpret_cast<OCSP_CERTID*>(std::uintptr_t{0x10}));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected && errno == 71 && allocations.empty(), "unmapped OCSP_CERTID is rejected without releasing");
+
+    auto* partial = Owned<OCSP_CERTID>();
+    partial->serialNumber = String(2);
+    partial->hashAlgorithm = reinterpret_cast<LibreSsl3X509Algor*>(std::uintptr_t{0x10});
+    const std::size_t pendingAllocations = allocations.size();
+    Require(pendingAllocations == 3, "partial test owns identifier and serial number");
+    errno = 71;
+    rejected = false;
+    try {
+        OCSP_CERTID_free_nid_postfix(partial);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected && errno == 71 && allocations.size() == pendingAllocations,
+        "unreadable hashAlgorithm is rejected before releasing any field");
+    partial->hashAlgorithm = nullptr;
+    OCSP_CERTID_free_nid_postfix(partial);
+    Require(allocations.empty(), "partial test cleaned up remaining allocations");
+
     std::puts("OCSP_CERTID_free: 128 ownership cases and null passed");
 }

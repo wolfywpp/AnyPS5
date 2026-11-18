@@ -172,16 +172,28 @@
 
 #include "prx/libSceLibreSsl3/libSceLibreSsl3.hpp"
 #include "prx/libc/include/Api.hpp"
+#include "prx/libc/include/General.hpp"
+
+#include <cerrno>
+#include <stdexcept>
 
 extern "C" void APS5_VABI OCSP_CERTID_free_nid_postfix(OCSP_CERTID* id) {
     if (!id) return;
-    ASN1_INTEGER_free_nid_postfix(id->serialNumber);
-    ASN1_OCTET_STRING_free_nid_postfix(id->issuerKeyHash);
-    ASN1_OCTET_STRING_free_nid_postfix(id->issuerNameHash);
-    if (id->hashAlgorithm) {
-        ASN1_TYPE_free_nid_postfix(reinterpret_cast<Asn1Type*>(id->hashAlgorithm->parameter));
-        ASN1_OBJECT_free_nid_postfix(static_cast<Asn1Object_nid_no_patch*>(id->hashAlgorithm->algorithm));
-        free_nid_postfix(id->hashAlgorithm);
+    const int savedErrno = errno;
+    OCSP_CERTID record{};
+    LibreSsl3X509Algor hashAlgorithm{};
+    bool copied = GuestCopyIn_nid_no_patch(&record, id, sizeof(record));
+    if (copied && record.hashAlgorithm)
+        copied = GuestCopyIn_nid_no_patch(&hashAlgorithm, record.hashAlgorithm, sizeof(hashAlgorithm));
+    errno = savedErrno;
+    if (!copied) throw std::invalid_argument("OCSP_CERTID_free: unreadable certificate identifier");
+    ASN1_INTEGER_free_nid_postfix(record.serialNumber);
+    ASN1_OCTET_STRING_free_nid_postfix(record.issuerKeyHash);
+    ASN1_OCTET_STRING_free_nid_postfix(record.issuerNameHash);
+    if (record.hashAlgorithm) {
+        ASN1_TYPE_free_nid_postfix(reinterpret_cast<Asn1Type*>(hashAlgorithm.parameter));
+        ASN1_OBJECT_free_nid_postfix(static_cast<Asn1Object_nid_no_patch*>(hashAlgorithm.algorithm));
+        free_nid_postfix(record.hashAlgorithm);
     }
     free_nid_postfix(id);
 }

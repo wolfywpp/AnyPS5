@@ -88,6 +88,14 @@ void CheckErrors(const char* path) {
     try { getw_nid_postfix(nullptr); } catch (const std::runtime_error&) { readThrew = true; }
     try { putw_nid_postfix(1, nullptr); } catch (const std::invalid_argument&) { writeThrew = true; }
     Require(readThrew && writeThrew, "null streams throw");
+    errno = 71;
+    bool badStreamThrew = false;
+    try {
+        putw_nid_postfix(1, reinterpret_cast<FileStream*>(std::uintptr_t{0x10}));
+    } catch (const std::invalid_argument&) {
+        badStreamThrew = errno == 71;
+    }
+    Require(badStreamThrew, "unreadable stream throws std::invalid_argument keeping errno");
 }
 
 void CheckConcurrentWrites(const char* path) {

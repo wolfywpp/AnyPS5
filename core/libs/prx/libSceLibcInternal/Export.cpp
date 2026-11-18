@@ -9,6 +9,7 @@
 #include "prx/libc/include/HeapDiagnostics.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstddef>
@@ -906,12 +907,30 @@ int APS5_VABI _Getctyptab_nid_postfix() {
 }
 
 const char* APS5_VABI _Getdst_nid_postfix(const char* s) {
-    if (s == nullptr || *s == '\0') {
+    if (s == nullptr) {
         return nullptr;
     }
-    const char sep = *s;
-    ++s;
-    if (*s == '\0') {
+    const auto readChar = [](const char* pointer) {
+        const int savedErrno = errno;
+        char ch = '\0';
+        const bool copied = GuestCopyIn_nid_no_patch(&ch, pointer, sizeof(ch));
+        errno = savedErrno;
+        if (!copied) {
+            throw std::invalid_argument("_Getdst: an unreadable rule string");
+        }
+        return ch;
+    };
+    char current = readChar(s);
+    if (current == '\0') {
+        return nullptr;
+    }
+    const auto advance = [&]() {
+        ++s;
+        current = readChar(s);
+    };
+    const char sep = current;
+    advance();
+    if (current == '\0') {
         return nullptr;
     }
 
@@ -926,40 +945,40 @@ const char* APS5_VABI _Getdst_nid_postfix(const char* s) {
     std::vector<Rule> rules;
     std::uint8_t lastYear = 0;
 
-    while (*s != '\0') {
-        if (*s == sep) {
+    while (current != '\0') {
+        if (current == sep) {
             return nullptr;
         }
 
         std::uint8_t ruleYear = lastYear;
-        if (*s == '(') {
-            ++s;
+        if (current == '(') {
+            advance();
             int yearVal = 0;
             int digits = 0;
-            while (*s >= '0' && *s <= '9') {
-                yearVal = yearVal * 10 + (*s - '0');
+            while (current >= '0' && current <= '9') {
+                yearVal = yearVal * 10 + (current - '0');
                 ++digits;
-                ++s;
                 if (digits > 4) {
                     return nullptr;
                 }
+                advance();
             }
-            if (digits != 4 || *s != ')' || yearVal < 1900) {
+            if (digits != 4 || current != ')' || yearVal < 1900) {
                 return nullptr;
             }
-            ++s;
+            advance();
             ruleYear = static_cast<std::uint8_t>((yearVal - 1900) & 0xff);
             lastYear = ruleYear;
         }
 
         int dateDigits = 0;
         char dateBuf[7] = {};
-        while (*s >= '0' && *s <= '9') {
+        while (current >= '0' && current <= '9') {
             if (dateDigits < 6) {
-                dateBuf[dateDigits] = *s;
+                dateBuf[dateDigits] = current;
             }
             ++dateDigits;
-            ++s;
+            advance();
         }
 
         if (dateDigits != 4 && dateDigits != 6) {
@@ -981,14 +1000,14 @@ const char* APS5_VABI _Getdst_nid_postfix(const char* s) {
         }
 
         std::uint8_t suffixByte = 0;
-        if (*s == '+' || *s == '-') {
-            char sign = *s;
-            ++s;
-            if (*s < '0' || *s > '6') {
+        if (current == '+' || current == '-') {
+            char sign = current;
+            advance();
+            if (current < '0' || current > '6') {
                 return nullptr;
             }
-            int w = *s - '0';
-            ++s;
+            int w = current - '0';
+            advance();
             int v = (w == 0) ? 7 : w;
             if (sign == '+') {
                 suffixByte = static_cast<std::uint8_t>(v + 7);
@@ -997,7 +1016,7 @@ const char* APS5_VABI _Getdst_nid_postfix(const char* s) {
             }
         }
 
-        if (*s != '\0' && *s != sep) {
+        if (current != '\0' && current != sep) {
             return nullptr;
         }
 
@@ -1009,9 +1028,9 @@ const char* APS5_VABI _Getdst_nid_postfix(const char* s) {
         r.year = ruleYear;
         rules.push_back(r);
 
-        if (*s == sep) {
-            ++s;
-            if (*s == '\0') {
+        if (current == sep) {
+            advance();
+            if (current == '\0') {
                 return nullptr;
             }
         }

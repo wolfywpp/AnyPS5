@@ -1,11 +1,20 @@
 #include "prx/libSceLibcInternal/include/RuntimeInternals.hpp"
 #include "prx/libSceLibcInternal/include/InventoryExports2.hpp"
 #include <atomic>
+#include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -184,6 +193,53 @@ void TestGetdst() {
     Require(_Getdst_nid_postfix(":0101+7") == nullptr, "weekday > 6 was not rejected");
     Require(_Getdst_nid_postfix(":0101:") == nullptr, "trailing separator was not rejected");
     Require(_Getdst_nid_postfix(":0101x") == nullptr, "trailing non-digit was not rejected");
+
+    errno = 71;
+    bool rejected = false;
+    try {
+        _Getdst_nid_postfix(reinterpret_cast<const char*>(std::uintptr_t{0x10}));
+    } catch (const std::invalid_argument&) {
+        rejected = errno == 71;
+    }
+    Require(rejected, "unreadable _Getdst rule string did not throw std::invalid_argument keeping errno");
+
+#ifdef _WIN32
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const std::size_t pageSize = info.dwPageSize;
+    auto* pages = static_cast<char*>(VirtualAlloc(nullptr, pageSize * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    Require(pages != nullptr, "VirtualAlloc failed");
+    DWORD oldProtect = 0;
+    Require(VirtualProtect(pages + pageSize, pageSize, PAGE_NOACCESS, &oldProtect) != 0, "VirtualProtect failed");
+#else
+    const long rawPageSize = sysconf(_SC_PAGESIZE);
+    Require(rawPageSize > 0, "sysconf page size failed");
+    const std::size_t pageSize = static_cast<std::size_t>(rawPageSize);
+    auto* pages = static_cast<char*>(mmap(nullptr, pageSize * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    Require(pages != MAP_FAILED, "mmap failed");
+    Require(mprotect(pages + pageSize, pageSize, PROT_NONE) == 0, "mprotect failed");
+#endif
+    char* const unterminated = pages + pageSize - 5;
+    std::memcpy(unterminated, ":0101", 5);
+    errno = 71;
+    rejected = false;
+    try {
+        _Getdst_nid_postfix(unterminated);
+    } catch (const std::invalid_argument&) {
+        rejected = errno == 71;
+    }
+    Require(rejected, "unterminated rule crossing guard page did not throw keeping errno");
+
+    char* const earlyInvalid = pages + pageSize - 2;
+    std::memcpy(earlyInvalid, ":x", 2);
+    errno = 71;
+    Require(_Getdst_nid_postfix(earlyInvalid) == nullptr && errno == 71,
+        "early malformed prefix before guard page should return null without over-reading");
+#ifdef _WIN32
+    Require(VirtualFree(pages, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+#else
+    Require(munmap(pages, pageSize * 2) == 0, "munmap failed");
+#endif
 }
 
 }

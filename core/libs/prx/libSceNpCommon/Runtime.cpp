@@ -1325,12 +1325,18 @@ int APS5_VABI sceNpUtilCmpAccountId(std::uint64_t left, std::uint64_t right) {
 
 int APS5_VABI sceNpCmpNpId(const void* npId1, const void* npId2) {
     if (!npId1 || !npId2) return NP_ERROR_NULL_ARGUMENT;
-    const auto* left = static_cast<const std::uint8_t*>(npId1);
-    const auto* right = static_cast<const std::uint8_t*>(npId2);
+    std::array<std::uint8_t, sizeof(NpIdFull)> left{};
+    std::array<std::uint8_t, sizeof(NpIdFull)> right{};
+    const int savedErrno = errno;
+    const bool copiedLeft = GuestCopyIn_nid_no_patch(left.data(), npId1, left.size());
+    const bool copiedRight = copiedLeft && GuestCopyIn_nid_no_patch(right.data(), npId2, right.size());
+    errno = savedErrno;
+    if (!copiedLeft || !copiedRight) return NP_ERROR_NULL_ARGUMENT;
     if (left[NP_ID_TERMINATOR_FLAG_OFFSET] != 1 || right[NP_ID_TERMINATOR_FLAG_OFFSET] != 1) return NP_ERROR_INVALID_NP_ID;
-    if (std::strncmp(static_cast<const char*>(npId1), static_cast<const char*>(npId2), NP_ONLINE_ID_MAX) != 0) return NP_ERROR_ONLINE_ID_MISMATCH;
-    if (NpIdWord(left, NP_ID_OPT_OFFSET) != NpIdWord(right, NP_ID_OPT_OFFSET)) return NP_ERROR_ONLINE_ID_MISMATCH;
-    if (NpIdWord(left, NP_ID_PLATFORM_OFFSET) == NpIdWord(right, NP_ID_PLATFORM_OFFSET)) return 0;
+    if (std::strncmp(reinterpret_cast<const char*>(left.data()), reinterpret_cast<const char*>(right.data()), NP_ONLINE_ID_MAX) != 0)
+        return NP_ERROR_ONLINE_ID_MISMATCH;
+    if (NpIdWord(left.data(), NP_ID_OPT_OFFSET) != NpIdWord(right.data(), NP_ID_OPT_OFFSET)) return NP_ERROR_ONLINE_ID_MISMATCH;
+    if (NpIdWord(left.data(), NP_ID_PLATFORM_OFFSET) == NpIdWord(right.data(), NP_ID_PLATFORM_OFFSET)) return 0;
     if (left[NP_ID_PLATFORM_OFFSET] == 0 || right[NP_ID_PLATFORM_OFFSET] == 0) return 0;
     return NP_ERROR_ONLINE_ID_MISMATCH;
 }
@@ -1978,11 +1984,18 @@ int APS5_VABI _ZN3sce2np9RefObject7ReleaseEv(NpRefObject* self) {
 
 int APS5_VABI sceNpUtilParseTitleId(NpCommunicationId* parts, const char* titleId) {
     if (titleId == nullptr) return NP_ERROR_INVALID_ARGUMENT_UTIL;
-    const std::size_t length = std::strlen(titleId);
-    if (length < 10 || length >= NP_TITLE_ID_SIZE || titleId[9] != '_') return NP_UTIL_ERROR_OUT_OF_RANGE;
+    std::size_t length = 0;
+    if (!GuestTextLength(titleId, NP_TITLE_ID_SIZE, length)) return NP_ERROR_INVALID_ARGUMENT_UTIL;
+    if (length < 10 || length >= NP_TITLE_ID_SIZE) return NP_UTIL_ERROR_OUT_OF_RANGE;
+    char localTitle[NP_TITLE_ID_SIZE]{};
+    const int savedTitleErrno = errno;
+    const bool copiedTitle = GuestCopyIn_nid_no_patch(localTitle, titleId, length);
+    errno = savedTitleErrno;
+    if (!copiedTitle) return NP_ERROR_INVALID_ARGUMENT_UTIL;
+    if (localTitle[9] != '_') return NP_UTIL_ERROR_OUT_OF_RANGE;
     NpCommunicationId value{};
-    std::memcpy(value.data, titleId, sizeof(value.data));
-    value.num = static_cast<std::uint8_t>(std::strtol(titleId + 10, nullptr, 10));
+    std::memcpy(value.data, localTitle, sizeof(value.data));
+    value.num = static_cast<std::uint8_t>(std::strtol(localTitle + 10, nullptr, 10));
     const int savedErrno = errno;
     const bool copied = GuestCopyOut_nid_no_patch(parts, &value, sizeof(value));
     errno = savedErrno;

@@ -89,6 +89,23 @@ static int testIds() {
     const NpIdFull heronId = npIdWithTag("heron-4", 0);
     ok &= expect(sceNpCmpNpIdInOrder(&heronId, &low, &order) == 0 && order == -1, "the handle did not take precedence");
 
+    NpIdFull validNpId = low;
+    validNpId.reserved[0] = 1;
+    errno = 71;
+    ok &= expect(sceNpCmpNpId(&validNpId, &validNpId) == 0 && errno == 71, "equal NpIds did not compare equal");
+    ok &= expect(sceNpCmpNpId(reinterpret_cast<const void*>(0x10), &validNpId) == INVALID_ARGUMENT && errno == 71,
+        "an unmapped first sceNpCmpNpId operand was accepted");
+    ok &= expect(sceNpCmpNpId(&validNpId, reinterpret_cast<const void*>(0x10)) == INVALID_ARGUMENT && errno == 71,
+        "an unmapped second sceNpCmpNpId operand was accepted");
+
+    NpCommunicationId titleParts{};
+    ok &= expect(sceNpUtilParseTitleId(&titleParts, "WXYZ54321_07") == 0 && titleParts.num == 7 && errno == 71,
+        "valid title ID was not parsed");
+    ok &= expect(sceNpUtilParseTitleId(&titleParts, reinterpret_cast<const char*>(0x10)) == UTIL_INVALID_ARGUMENT && errno == 71,
+        "an unmapped title ID string was accepted");
+    ok &= expect(sceNpUtilParseTitleId(reinterpret_cast<NpCommunicationId*>(0x10), "WXYZ54321_07") == UTIL_INVALID_ARGUMENT && errno == 71,
+        "an unwritable title ID destination was accepted");
+
     const NpIdFull none = npIdWithTag("heron-4", 0);
     const NpIdFull ps3 = npIdWithTag("heron-4", 0x00337370);
     const NpIdFull vita = npIdWithTag("heron-4", 0x32707370);

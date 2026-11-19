@@ -1247,10 +1247,19 @@ void TestJsonText() {
     Require(sceNpUtilGetNthChar(0, "a", reinterpret_cast<const char**>(0x10)) == NpUtilInvalid, "unwritable character destination is refused");
 
     char url[32] = {};
-    Require(sceNpUtilHttpUrlEncode(url, sizeof(url), "a b=c*", 6, &length) == 0 && Equals(url, "a+b%3Dc*") && length == 9,
+    errno = 71;
+    Require(sceNpUtilHttpUrlEncode(url, sizeof(url), "a b=c*", 6, &length) == 0 && Equals(url, "a+b%3Dc*") && length == 9 && errno == 71,
         "form encoding keeps the safe set and escapes the rest");
-    Require(sceNpUtilHttpUrlEncode(nullptr, 0, "@", 1, &length) == 0 && length == 4, "a null buffer reports the encoded size");
-    Require(sceNpUtilHttpUrlEncode(url, 3, "@", 1, &length) == NpUtilBufferTooSmall, "encoding needs room for the terminator");
+    Require(sceNpUtilHttpUrlEncode(nullptr, 0, "@", 1, &length) == 0 && length == 4 && errno == 71, "a null buffer reports the encoded size");
+    Require(sceNpUtilHttpUrlEncode(url, 3, "@", 1, &length) == NpUtilBufferTooSmall && length == 4 && errno == 71, "encoding needs room for the terminator");
+    Require(sceNpUtilHttpUrlEncode(url, sizeof(url), reinterpret_cast<const char*>(0x10), 4, &length) == NpUtilInvalid && length == 4 && errno == 71,
+        "an unreadable form encoding source is refused");
+    Require(sceNpUtilHttpUrlEncode(reinterpret_cast<char*>(0x10), 16, "a b", 3, &length) == NpUtilInvalid && errno == 71,
+        "an unwritable form encoding destination is refused");
+    Require(sceNpUtilHttpUrlEncode(url, sizeof(url), "a b", 3, reinterpret_cast<std::size_t*>(0x10)) == NpUtilInvalid && errno == 71,
+        "an unwritable form encoding length is refused");
+    Require(sceNpUtilHttpUrlEncode(nullptr, 0, "a b", 3, reinterpret_cast<std::size_t*>(0x10)) == NpUtilInvalid && errno == 71,
+        "an unwritable form encoding measure length is refused");
 }
 
 void TestXmlText() {

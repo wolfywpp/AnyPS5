@@ -1012,27 +1012,42 @@ int APS5_VABI sceNpUtilHttpUrlEncode(char* dst, std::size_t dstSize, const char*
     std::size_t* dstLength) {
     if (src == nullptr || srcLength == 0) return NP_UTIL_ERROR_INVALID_ARGUMENT;
     if (dst == nullptr && dstLength == nullptr) return NP_UTIL_ERROR_INVALID_ARGUMENT;
+    const int savedErrno = errno;
+    const auto finish = [&](int result) {
+        errno = savedErrno;
+        return result;
+    };
+    std::string source;
+    if (!ReadGuestBytes(src, srcLength, source)) return finish(NP_UTIL_ERROR_INVALID_ARGUMENT);
+    std::string encoded;
+    if (dst != nullptr) encoded.reserve(srcLength <= dstSize / 3 ? srcLength * 3 + 1 : dstSize);
     std::size_t count = 0;
     for (std::size_t i = 0; i < srcLength; ++i) {
-        const auto c = static_cast<unsigned char>(src[i]);
+        const auto c = static_cast<unsigned char>(source[i]);
         const bool escaped = c != ' ' && !IsUrlSafe(c);
         const std::size_t length = escaped ? 3 : 1;
-        if (dst != nullptr && count + length > dstSize) return NP_UTIL_ERROR_BUFFER_TOO_SMALL;
+        if (dst != nullptr && (length > dstSize || count > dstSize - length)) return finish(NP_UTIL_ERROR_BUFFER_TOO_SMALL);
         if (dst != nullptr) {
             if (escaped) {
-                dst[count] = '%';
-                dst[count + 1] = URL_HEX_DIGITS[c >> 4];
-                dst[count + 2] = URL_HEX_DIGITS[c & 0xF];
+                encoded.push_back('%');
+                encoded.push_back(URL_HEX_DIGITS[c >> 4]);
+                encoded.push_back(URL_HEX_DIGITS[c & 0xF]);
             } else {
-                dst[count] = c == ' ' ? '+' : static_cast<char>(c);
+                encoded.push_back(c == ' ' ? '+' : static_cast<char>(c));
             }
         }
         count += length;
     }
-    if (dst != nullptr && count + 1 > dstSize) return NP_UTIL_ERROR_BUFFER_TOO_SMALL;
-    if (dst != nullptr) dst[count] = '\0';
-    if (dstLength != nullptr) *dstLength = count + 1;
-    return 0;
+    if (dst != nullptr && count >= dstSize) return finish(NP_UTIL_ERROR_BUFFER_TOO_SMALL);
+    if (dst != nullptr) {
+        encoded.push_back('\0');
+        if (!GuestCopyOut_nid_no_patch(dst, encoded.data(), encoded.size())) return finish(NP_UTIL_ERROR_INVALID_ARGUMENT);
+    }
+    if (dstLength != nullptr) {
+        const std::size_t total = count + 1;
+        if (!GuestCopyOut_nid_no_patch(dstLength, &total, sizeof(total))) return finish(NP_UTIL_ERROR_INVALID_ARGUMENT);
+    }
+    return finish(0);
 }
 
 }

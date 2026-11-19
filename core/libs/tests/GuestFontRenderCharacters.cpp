@@ -114,6 +114,35 @@ int main() {
         count = 77;
         Require(sceFontStringRefersRenderCharacters(string, &characters[0], outside, &count) == nullptr && count == 0);
     }
+
+    auto* const unmappedChar = reinterpret_cast<const FontTextCharacter*>(0x10);
+    int syllableState = 77;
+    errno = 71;
+    Require(sceFontCharacterGetSyllableStringState(&characters[0], &syllableState) == SCE_FONT_OK && syllableState == 0 && errno == 71);
+    Require(sceFontCharacterGetSyllableStringState(unmappedChar, &syllableState) == SCE_FONT_ERROR_INVALID_PARAMETER && syllableState == 0 && errno == 71);
+    Require(sceFontCharacterGetSyllableStringState(&characters[0], reinterpret_cast<int*>(0x10)) == SCE_FONT_ERROR_INVALID_PARAMETER && errno == 71);
+    Require(sceFontCharacterLooksFormatCharacters(unmappedChar) == 0 && sceFontCharacterLooksFormatCharacters(&characters[0]) == 0 && errno == 71);
+    Require(sceFontCharacterLooksWhiteSpace(unmappedChar) == 0 && sceFontCharacterLooksWhiteSpace(&characters[0]) == 0 && errno == 71);
+    Require(sceFontCharacterRefersTextBack(unmappedChar) == nullptr && sceFontCharacterRefersTextBack(&characters[1]) == &characters[0] && errno == 71);
+    Require(sceFontCharacterRefersTextNext(unmappedChar) == nullptr && sceFontCharacterRefersTextNext(&characters[1]) == &characters[2] && errno == 71);
+
+    FontTextCodes codes{};
+    Require(sceFontCharactersRefersTextCodes(&characters[0], &characters[3], &codes) == &codes && codes.text.code == 'a' && errno == 71);
+    Require(sceFontTextCodesStepNext(&codes) == &codes && codes.text.code == 'b');
+    Require(sceFontCharactersRefersTextCodes(unmappedChar, &characters[3], &codes) == nullptr && errno == 71);
+    Require(sceFontCharactersRefersTextCodes(&characters[0], &characters[3], reinterpret_cast<FontTextCodes*>(0x10)) == nullptr && errno == 71);
+
+    Codes probe{{'x'}, font};
+    FontTextSource probeSource{};
+    Require(sceFontTextSourceInit(&probeSource, &probe, 1, ParseCodes, &probe) == SCE_FONT_OK);
+    FontString badString = string;
+    Require(sceFontCreateString(reinterpret_cast<const FontMemory*>(0x10), &probeSource, nullptr, &badString) == SCE_FONT_ERROR_INVALID_MEMORY && badString == nullptr && errno == 71);
+    badString = string;
+    Require(sceFontCreateString(&memory, reinterpret_cast<FontTextSource*>(0x10), nullptr, &badString) == SCE_FONT_ERROR_INVALID_PARAMETER && badString == nullptr && errno == 71);
+    badString = string;
+    Require(sceFontCreateString(&memory, &probeSource, reinterpret_cast<const FontCreateStringDetail*>(0x10), &badString) == SCE_FONT_ERROR_INVALID_PARAMETER && badString == nullptr && errno == 71);
+    Require(sceFontCreateString(&memory, &probeSource, nullptr, reinterpret_cast<FontString*>(0x10)) == SCE_FONT_ERROR_INVALID_PARAMETER && errno == 71);
+
     Require(sceFontDestroyString(&string) == SCE_FONT_OK);
     Require(sceFontDestroyString(&emptyString) == SCE_FONT_OK);
     Require(sceFontCloseFont(font) == SCE_FONT_OK);

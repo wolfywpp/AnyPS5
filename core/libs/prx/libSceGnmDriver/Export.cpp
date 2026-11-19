@@ -433,85 +433,139 @@ void WriteMarker(std::uint32_t* at, std::uint32_t kind, const char* marker, std:
     if (color) std::memcpy(text + length + 8, color, sizeof(*color));
 }
 
+bool ReadGuestWords(std::uint32_t* dst, const std::uint32_t* src, std::size_t count) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(dst, src, count * sizeof(std::uint32_t));
+    errno = savedErrno;
+    return copied;
+}
+
+bool WriteGuestWords(std::uint32_t* dst, const std::uint32_t* src, std::size_t count) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(dst, src, count * sizeof(std::uint32_t));
+    errno = savedErrno;
+    return copied;
+}
+
+template <std::size_t N>
+bool ReadShaderRegs(const std::uint32_t* regs, std::array<std::uint32_t, N>& out) {
+    return ReadGuestWords(out.data(), regs, out.size()) && out[1] == 0;
+}
+
+template <std::size_t N>
+int WriteShaderPacket(std::uint32_t* cmd, const std::array<std::uint32_t, N>& packet, const std::uint32_t* end) {
+    const auto words = static_cast<std::size_t>(end - packet.data());
+    return WriteGuestWords(cmd, packet.data(), words) ? 0 : -1;
+}
+
+std::uint32_t WriteHardwareStatePacket(std::uint32_t* cmd, std::span<const std::uint32_t> state) {
+    std::array<std::uint32_t, HwInitPacketWords> packet{};
+    auto* at = std::copy(GnmNeo::ClearState.begin(), GnmNeo::ClearState.end(), packet.data());
+    at = std::copy(state.begin(), state.end(), at);
+    Nop(at, static_cast<std::uint32_t>(packet.data() + HwInitPacketWords - at) - 1);
+    return WriteGuestWords(cmd, packet.data(), packet.size()) ? HwInitPacketWords : static_cast<std::uint32_t>(-1);
+}
+
+bool QueryNeoMode() {
+    const int savedErrno = errno;
+    const bool neo = sceKernelIsNeoMode() != 0;
+    errno = savedErrno;
+    return neo;
+}
+
 }
 
 extern "C" {
 
 int APS5_VABI sceGnmSetPsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
     if (!cmd || size <= 0x27) return -1;
+    std::array<std::uint32_t, 40> packet{};
+    auto* at = packet.data();
     if (!regs) {
-        cmd = Emit(cmd, OpSetShReg, {8, 0, 0});
-        cmd = Emit(cmd, OpSetContextReg, {0x203, 0});
-        Nop(cmd, 0x20);
-        return 0;
+        at = Emit(at, OpSetShReg, {8, 0, 0});
+        at = Emit(at, OpSetContextReg, {0x203, 0});
+        at = Nop(at, 0x20);
+        return WriteShaderPacket(cmd, packet, at);
     }
-    if (regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {8, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {10, regs[2], regs[3]});
-    cmd = Emit(cmd, OpSetContextReg, {0x1c4, regs[4], regs[5]});
-    cmd = Emit(cmd, OpSetContextReg, {0x1b3, regs[6], regs[7]});
-    cmd = SetRegisters(cmd, OpSetContextReg, {{0x1b6, regs[8]}, {0x1b8, regs[9]}, {0x203, regs[10]}, {0x8f, regs[11]}});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 12> r{};
+    if (!ReadShaderRegs(regs, r)) return -1;
+    at = Emit(at, OpSetShReg, {8, r[0], 0});
+    at = Emit(at, OpSetShReg, {10, r[2], r[3]});
+    at = Emit(at, OpSetContextReg, {0x1c4, r[4], r[5]});
+    at = Emit(at, OpSetContextReg, {0x1b3, r[6], r[7]});
+    at = SetRegisters(at, OpSetContextReg, {{0x1b6, r[8]}, {0x1b8, r[9]}, {0x203, r[10]}, {0x8f, r[11]}});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetVsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
-    if (!cmd || size <= 0x1c || !regs || (modifier & 0xfcfffc3fu) || regs[1] != 0) return -1;
-    const std::uint32_t rsrc1 = modifier == 0 ? regs[2] : (regs[2] & 0xfcfffc3fu) | modifier;
-    cmd = Emit(cmd, OpSetShReg, {0x48, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x4a, rsrc1, regs[3]});
-    cmd = SetRegisters(cmd, OpSetContextReg, {{0x207, regs[6]}, {0x1b1, regs[4]}, {0x1c3, regs[5]}});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 7> r{};
+    if (!cmd || size <= 0x1c || !regs || (modifier & 0xfcfffc3fu) || !ReadShaderRegs(regs, r)) return -1;
+    const std::uint32_t rsrc1 = modifier == 0 ? r[2] : (r[2] & 0xfcfffc3fu) | modifier;
+    std::array<std::uint32_t, 29> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0x48, r[0], 0});
+    at = Emit(at, OpSetShReg, {0x4a, rsrc1, r[3]});
+    at = SetRegisters(at, OpSetContextReg, {{0x207, r[6]}, {0x1b1, r[4]}, {0x1c3, r[5]}});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetCsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
-    if (!cmd || size <= 0x18 || !regs || regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {0x20c, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x212, regs[2], regs[3]});
-    cmd = Emit(cmd, OpSetShReg, {0x207, regs[4], regs[5], regs[6]});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 7> r{};
+    if (!cmd || size <= 0x18 || !regs || !ReadShaderRegs(regs, r)) return -1;
+    std::array<std::uint32_t, 25> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0x20c, r[0], 0});
+    at = Emit(at, OpSetShReg, {0x212, r[2], r[3]});
+    at = Emit(at, OpSetShReg, {0x207, r[4], r[5], r[6]});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetEsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
-    if (!cmd || size < 0x14 || !regs || (modifier & 0xfcfffc3fu) || regs[1] != 0) return -1;
-    const std::uint32_t rsrc1 = modifier == 0 ? regs[2] : (regs[2] & 0xfcfffc3fu) | modifier;
-    cmd = Emit(cmd, OpSetShReg, {0xc8, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0xca, rsrc1, regs[3]});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 4> r{};
+    if (!cmd || size < 0x14 || !regs || (modifier & 0xfcfffc3fu) || !ReadShaderRegs(regs, r)) return -1;
+    const std::uint32_t rsrc1 = modifier == 0 ? r[2] : (r[2] & 0xfcfffc3fu) | modifier;
+    std::array<std::uint32_t, 20> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0xc8, r[0], 0});
+    at = Emit(at, OpSetShReg, {0xca, rsrc1, r[3]});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetGsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
-    if (!cmd || size < 0x1d || !regs || regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {0x88, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x8a, regs[2], regs[3]});
-    cmd = SetRegisters(cmd, OpSetContextReg, {{0x2e5, regs[4]}, {0x29b, regs[5]}, {0x2e4, regs[6]}});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 7> r{};
+    if (!cmd || size < 0x1d || !regs || !ReadShaderRegs(regs, r)) return -1;
+    std::array<std::uint32_t, 29> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0x88, r[0], 0});
+    at = Emit(at, OpSetShReg, {0x8a, r[2], r[3]});
+    at = SetRegisters(at, OpSetContextReg, {{0x2e5, r[4]}, {0x29b, r[5]}, {0x2e4, r[6]}});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetHsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t lsHsConfig) {
-    if (!cmd || size < 0x1e || !regs || regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {0x108, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x10a, regs[2], regs[3]});
-    cmd = Emit(cmd, OpSetContextReg, {0x286, regs[5], regs[6]});
-    cmd = SetRegisters(cmd, OpSetContextReg, {{0x2db, regs[4]}, {0x2d6, lsHsConfig}});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 7> r{};
+    if (!cmd || size < 0x1e || !regs || !ReadShaderRegs(regs, r)) return -1;
+    std::array<std::uint32_t, 30> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0x108, r[0], 0});
+    at = Emit(at, OpSetShReg, {0x10a, r[2], r[3]});
+    at = Emit(at, OpSetContextReg, {0x286, r[5], r[6]});
+    at = SetRegisters(at, OpSetContextReg, {{0x2db, r[4]}, {0x2d6, lsHsConfig}});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 int APS5_VABI sceGnmSetLsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
-    if (!cmd || size < 0x17 || !regs) return -1;
     const std::uint32_t mask = (modifier & 0xfffffc3fu) == 0 ? 0xfffffc3fu : 0xfcfffc3fu;
-    if ((modifier & mask) || regs[1] != 0) return -1;
-    const std::uint32_t rsrc1 = modifier == 0 ? regs[2] : (regs[2] & mask) | modifier;
-    cmd = Emit(cmd, OpSetShReg, {0x148, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x14b, regs[3]});
-    cmd = Emit(cmd, OpSetShReg, {0x14a, rsrc1, regs[3]});
-    Nop(cmd, 11);
-    return 0;
+    std::array<std::uint32_t, 4> r{};
+    if (!cmd || size < 0x17 || !regs || (modifier & mask) || !ReadShaderRegs(regs, r)) return -1;
+    const std::uint32_t rsrc1 = modifier == 0 ? r[2] : (r[2] & mask) | modifier;
+    std::array<std::uint32_t, 23> packet{};
+    auto* at = Emit(packet.data(), OpSetShReg, {0x148, r[0], 0});
+    at = Emit(at, OpSetShReg, {0x14b, r[3]});
+    at = Emit(at, OpSetShReg, {0x14a, rsrc1, r[3]});
+    at = Nop(at, 11);
+    return WriteShaderPacket(cmd, packet, at);
 }
 
 std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState175(std::uint32_t* cmd, std::uint32_t size) {
@@ -525,31 +579,25 @@ std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState175(std::uint32_t* cmd
 }
 
 std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState200_nid_disambig1(std::uint32_t* cmd, std::uint32_t size) {
+    if (!cmd) return static_cast<std::uint32_t>(-1);
     if (size < HwInitPacketWords) return 0;
-    const bool neo = sceKernelIsNeoMode() != 0;
-    auto* at = std::copy(GnmNeo::ClearState.begin(), GnmNeo::ClearState.end(), cmd);
-    if (neo) at = std::copy(GnmNeo::HardwareState200.begin(), GnmNeo::HardwareState200.end(), at);
-    else at = std::copy(BaseHardwareState200.begin(), BaseHardwareState200.end(), at);
-    Nop(at, static_cast<std::uint32_t>(cmd + HwInitPacketWords - at) - 1);
-    return HwInitPacketWords;
+    const bool neo = QueryNeoMode();
+    return WriteHardwareStatePacket(cmd, neo ? std::span<const std::uint32_t>{GnmNeo::HardwareState200} : std::span<const std::uint32_t>{BaseHardwareState200});
 }
 
 std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState350_nid_disambig1(std::uint32_t* cmd, std::uint32_t size) {
     if (!cmd) return static_cast<std::uint32_t>(-1);
     if (size < HwInitPacketWords) return 0;
-    auto* at = std::copy(GnmNeo::ClearState.begin(), GnmNeo::ClearState.end(), cmd);
-    if (sceKernelIsNeoMode()) at = std::copy(GnmNeo::HardwareState350.begin(), GnmNeo::HardwareState350.end(), at);
-    else at = std::copy(BaseHardwareState350.begin(), BaseHardwareState350.end(), at);
-    Nop(at, static_cast<std::uint32_t>(cmd + HwInitPacketWords - at) - 1);
-    return HwInitPacketWords;
+    const bool neo = QueryNeoMode();
+    return WriteHardwareStatePacket(cmd, neo ? std::span<const std::uint32_t>{GnmNeo::HardwareState350} : std::span<const std::uint32_t>{BaseHardwareState350});
 }
 
 std::uint32_t APS5_VABI sceGnmDrawInitToDefaultContextState400_nid_disambig1(std::uint32_t* cmd, std::uint32_t size) {
     if (!cmd) return static_cast<std::uint32_t>(-1);
     if (size != HwInitPacketWords) return 0;
-    if (sceKernelIsNeoMode()) std::copy(GnmNeo::ContextState400.begin(), GnmNeo::ContextState400.end(), cmd);
-    else std::copy(BaseContextState400.begin(), BaseContextState400.end(), cmd);
-    return HwInitPacketWords;
+    const bool neo = QueryNeoMode();
+    const std::span<const std::uint32_t> state = neo ? std::span<const std::uint32_t>{GnmNeo::ContextState400} : std::span<const std::uint32_t>{BaseContextState400};
+    return WriteGuestWords(cmd, state.data(), state.size()) ? HwInitPacketWords : static_cast<std::uint32_t>(-1);
 }
 
 std::uint32_t APS5_VABI sceGnmDispatchInitDefaultHardwareState(std::uint32_t* cmd, std::uint32_t size) {

@@ -1,5 +1,6 @@
 #include "prx/libSceGnmDriver/include/Api.hpp"
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -121,6 +122,28 @@ void TestLs() {
     Require(sceGnmSetLsShader(words.data(), 0x100, Regs, 0x40) == 0 && words[9] == (Regs[2] | 0x40), "the local shader modifier was not merged");
 }
 
+void TestGuestPointers() {
+    auto* const unmappedCmd = reinterpret_cast<std::uint32_t*>(0x10);
+    const auto* const unmappedRegs = reinterpret_cast<const std::uint32_t*>(0x10);
+    auto words = Fresh();
+    errno = 71;
+    Require(sceGnmSetPsShader(unmappedCmd, 0x100, Regs) == -1 && errno == 71, "unwritable pixel cmd was accepted");
+    Require(sceGnmSetPsShader(unmappedCmd, 0x100, nullptr) == -1 && errno == 71, "unwritable null-regs pixel cmd was accepted");
+    Require(sceGnmSetPsShader(words.data(), 0x100, unmappedRegs) == -1 && words[0] == Untouched && errno == 71, "unreadable pixel regs accepted");
+    Require(sceGnmSetVsShader(unmappedCmd, 0x100, Regs, 0) == -1 && errno == 71, "unwritable vertex cmd was accepted");
+    Require(sceGnmSetVsShader(words.data(), 0x100, unmappedRegs, 0) == -1 && words[0] == Untouched && errno == 71, "unreadable vertex regs accepted");
+    Require(sceGnmSetCsShader(unmappedCmd, 0x100, Regs) == -1 && errno == 71, "unwritable compute cmd was accepted");
+    Require(sceGnmSetCsShader(words.data(), 0x100, unmappedRegs) == -1 && words[0] == Untouched && errno == 71, "unreadable compute regs accepted");
+    Require(sceGnmSetEsShader(unmappedCmd, 0x100, Regs, 0) == -1 && errno == 71, "unwritable export cmd was accepted");
+    Require(sceGnmSetEsShader(words.data(), 0x100, unmappedRegs, 0) == -1 && words[0] == Untouched && errno == 71, "unreadable export regs accepted");
+    Require(sceGnmSetGsShader(unmappedCmd, 0x100, Regs) == -1 && errno == 71, "unwritable geometry cmd was accepted");
+    Require(sceGnmSetGsShader(words.data(), 0x100, unmappedRegs) == -1 && words[0] == Untouched && errno == 71, "unreadable geometry regs accepted");
+    Require(sceGnmSetHsShader(unmappedCmd, 0x100, Regs, 0x77) == -1 && errno == 71, "unwritable hull cmd was accepted");
+    Require(sceGnmSetHsShader(words.data(), 0x100, unmappedRegs, 0x77) == -1 && words[0] == Untouched && errno == 71, "unreadable hull regs accepted");
+    Require(sceGnmSetLsShader(unmappedCmd, 0x100, Regs, 0) == -1 && errno == 71, "unwritable local cmd was accepted");
+    Require(sceGnmSetLsShader(words.data(), 0x100, unmappedRegs, 0) == -1 && words[0] == Untouched && errno == 71, "unreadable local regs accepted");
+}
+
 }  // namespace
 
 int main() {
@@ -132,6 +155,7 @@ int main() {
         TestGs();
         TestHs();
         TestLs();
+        TestGuestPointers();
         std::puts("gnm shader writer tests passed");
         return 0;
     } catch (const std::exception& error) {

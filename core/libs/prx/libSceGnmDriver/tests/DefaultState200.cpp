@@ -2,6 +2,7 @@
 #include "prx/libSceGnmDriverForNeoMode/include/InitSequences.hpp"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +59,9 @@ template <std::size_t Words>
 void CheckState(const std::array<std::uint32_t, Words>& state, const std::string& mode) {
     std::array<std::uint32_t, 0x102> words{};
     words.fill(Untouched);
+    errno = 71;
+    Require(sceGnmDrawInitDefaultHardwareState200_nid_disambig1(nullptr, 0x100) == static_cast<std::uint32_t>(-1) && errno == 71, mode + ": a null buffer was accepted");
+    Require(sceGnmDrawInitDefaultHardwareState200_nid_disambig1(reinterpret_cast<std::uint32_t*>(0x10), 0x100) == static_cast<std::uint32_t>(-1) && errno == 71, mode + ": an unwritable buffer was accepted");
     Require(sceGnmDrawInitDefaultHardwareState200_nid_disambig1(words.data() + 1, 0xff) == 0, mode + ": a short buffer was accepted");
     Require(std::all_of(words.begin(), words.end(), [](std::uint32_t word) { return word == Untouched; }), mode + ": a short buffer was written");
     Require(sceGnmDrawInitDefaultHardwareState200_nid_disambig1(words.data() + 1, 0x100) == 0x100, mode + ": the state is not 256 dwords");
